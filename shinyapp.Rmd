@@ -1,0 +1,190 @@
+---
+title: "Commodity GSPC Correlation"
+runtime: shiny
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    source_code: embed
+---
+
+
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(quantmod)
+library(dygraphs)
+library(dplyr)
+
+# A function to build an xts object to hold both commodity and index returns.
+comm_correlations <- function(comm, period = "weekly", window = 10) {
+
+# Make a data frame of the commodity and SP500 ETF.
+comm_ticker_sector <- data_frame(c(comm, "GSPC"))
+
+colnames(comm_ticker_sector) <- "tickers"
+
+# Use getSymbols and Cl to get close prices.
+
+symbols <- getSymbols(comm_ticker_sector$tickers, verbose = FALSE, warnings = FALSE, 
+           src = 'csv', dir= "C:/Users/RJK/Documents/SpiderOak Hive/Financial/commodities_data/daily2006",
+           extension='csv', header = TRUE, 
+           stingsAsFactors = FALSE)
+
+comm_prices <- do.call(merge, lapply(symbols, function(x) Cl(get(x))))
+
+# We want log returns by the period chosen by the user. 
+
+comm_returns <- do.call(merge, lapply(comm_prices, 
+                                     function(x) periodReturn(x, period = period, type = 'log')))
+
+# Create one xts object we can pass to rollapply.
+merged_xts <- merge(comm_returns[, 1], comm_returns[, 2])
+
+merged_xts$rolling_cor <- rollapply(merged_xts, window, 
+                                         function(x) cor(x[, 1], x[, 2], use = "pairwise.complete.obs"), 
+                                         by.column = FALSE)
+# We care about the name because it will be displayed in the dygraph when a user hovers.
+
+names(merged_xts) <- c(paste(comm, "Returns", sep = ""), "GSPC Returns", paste(comm, "/GSPC Correlation", sep = ""))
+
+    
+assign("sector_correlations", merged_xts, .GlobalEnv)
+}
+
+```
+
+Sidebar {.sidebar}
+=====================================
+  
+```{r}
+helpText("Choose a sector")
+
+# Don't make the user memorize the ETF ticker symbols! 
+# Let them choose the intuitive sector name and then translate to the 
+# ticker symbol in the background.
+
+fluidRow(
+  column(9,
+  selectInput("sector", "Sector ETF",
+                c(
+                  "Corn" = "CO",
+                  "High Grade Copper" = "HG",
+                  "Heating Oil" = "HO",
+                  "Lumber" = "LB", 
+                  "Live Cattle" = "LC", 
+                  "Natural Gas" = "NG", 
+                  "Orange Juice" = "OJ",
+                  "Platinum" = "PT", 
+                  "Rough Rice" = "RR")))
+)  
+
+
+helpText("Choose a returns time period and a rolling window")
+
+fluidRow(
+  column(7,
+  selectInput("period", "Time Period", c("daily", "weekly", "monthly"))),
+  column(7,
+  numericInput("window", " Rolling Window", 10, min = 5, max = 50, step = 5))
+)
+
+# I like giving the user the option of whether to display the mean, min and max. 
+# It doesn't make a huge difference, of course, but at least enables the user to 
+# notice the lines more consistently. 
+checkboxInput("max", label = 'Display Max Rolling Correlation', value = FALSE)
+checkboxInput("mean", label = 'Display Mean Rolling Correlation', value = FALSE)
+checkboxInput("min", label = 'Display Min Rolling Correlation', value = FALSE)
+```
+
+```{r}
+# Build our correlation time series object here
+# so we can access it throughout the rest of the app.
+
+comm_correlation <- reactive({
+  comm_corr <- comm_correlations(input$sector, input$period, input$window)
+  comm_corr[, 3]
+})
+
+# Let's calculate mean, minimum and maximum rolling correlations. 
+# We'll use these on the graph and in the value boxes.
+avg <- reactive({ 
+  avg <- round(mean(comm_correlation(),  na.rm=T), 2)
+  })
+mini <- reactive({
+  mini <- round(min(comm_correlation(),  na.rm=T), 2)
+  })
+maxi <- reactive({
+  maxi <- round(max(comm_correlation(),  na.rm=T), 2)
+  })
+
+
+```
+
+
+Rolling Correlations
+===================================== 
+
+Row {data-height=600}
+-----------------------------------------------------------------------
+
+### Sector/SP500 Rolling Correlations
+
+```{r}
+# Dygraph time!
+
+dygraphOutput("dygraphCorrelation")
+
+output$dygraphCorrelation <- renderDygraph({
+  
+  dygraph(comm_correlation(), 
+          main = paste("rolling", input$period, "correlation ", input$sector, "/GSPC", sep = " ")) %>% 
+  # A new wrinkle that hasn't been included in previous flexdashboards: let the user add lines to the 
+  # dygraph.   
+  dyLimit(if(input$mean == TRUE) {avg()}, color = 'black') %>% 
+  dyLimit(if(input$min == TRUE) {mini()}, color = 'red') %>% 
+  dyLimit(if(input$max == TRUE) {maxi()}, color = 'blue')
+  
+})
+
+```
+
+Row {data-height=200}
+-----------------------------------------------------------------------
+
+### Mean Rolling Correlation
+
+```{r}
+valueBoxOutput("approvalBox1")
+output$approvalBox1<-renderValueBox({
+ 
+  # Display the mean we calculated in 'avg' reactive function above.
+  
+  valueBox(value = avg(), icon = "fa-line-chart", color = "primary")
+  
+})
+```
+
+### Max Rolling Correlation
+
+```{r}
+valueBoxOutput("approvalBox2")
+output$approvalBox2<-renderValueBox({
+  
+  # Display the max we calculated in the setup
+  valueBox(value = maxi(), icon = "fa-line-chart", color = "primary")
+  
+})
+```
+
+### Min Rolling Correlation
+
+```{r}
+valueBoxOutput("approvalBox3")
+output$approvalBox3<-renderValueBox({
+  
+  # Display the min we calculated in the setup
+  valueBox(value = mini(), icon = "fa-line-chart", color = "primary")
+  
+})
+```

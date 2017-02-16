@@ -1,0 +1,145 @@
+---
+title: "sp500Corr"
+author: "RJ Kumar"
+date: "16 February 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this R Makdown file, I am going to reproduce the work of Jonathan Regenstein (big ups to him) in his excellent series of posts entitled "Reproducible Finance with R: Sector Correlations". In my own series on universe selection, I have shown how to check for cross correlation using R, now we look for correlation with the sp500, the benchmark index. A high correlation with this means you may as well just trade the index, with whatever strategy, rather than that instrument. On with the body count, I mean, code. Load packages.
+
+```{r, include=FALSE}
+library(dplyr)
+library(quantmod)
+library(dygraphs)
+```
+
+OK, now we exactly copy Jonathons setup code but instead of using his sector ETF from yahoo Finance, I'm going to use my commodity prices which I grabbed from IG markets in a previous post.Names have been chaned to protect the innocent, I mean, reflect this. Just as a heads up, if you are unfortunate enough to have grabbed your data from IG as weekly, it will come with the weekly date sometimes Monday, sometimes Sunday with no real pattern I can detect, meaning it is extremely hard to get the series to align with datat from another source. So you either use all IG data or get the daily data and drop down to weekly from there.
+
+```{r}
+# List of commodity tickers
+
+ticker <- c("CO","HG","HO",
+            "LB","LC",
+            "NG","OJ","PT","RR",
+            "GSPC")  
+
+# And the commodity names for those ETFs.
+
+sector <- c("Corn","High Grade Copper","Heating Oil",
+            "Lumber", "Live Cattle",
+            "Natural Gas","Orange Juice","Platinum","Rough Rice",
+            "Index")
+
+comm_ticker_sector <- data_frame(ticker, sector)
+
+comm_ticker_sector
+```
+
+Now, I've again copied the code of Jonathon, except using getSymbols csv option to get files I've already downloaded from a broker. To do this I've included a new variable called csv_dir which is the directory the csv files are stored in.
+
+```{r, message=TRUE, warning=FALSE}
+# A function to build an xts object of etf returns.
+
+comm_weekly_returns <- function(ticker,csvDir) {
+
+# Download prices using getSybmols    
+symbols <- getSymbols(Symbols = ticker, verbose = FALSE, warnings = FALSE, 
+           src = 'csv', dir= csvDir, extension='csv', header = TRUE, 
+           stingsAsFactors = FALSE)
+# Take just the Closing prices.
+comm_prices <- do.call(merge, lapply(symbols, function(x) Cl(get(x))))
+# Use the periodReturn() function to get log weekly returns.    
+comm_returns <- do.call(merge, lapply(comm_prices, 
+                                     function(x) periodReturn(x, period = 'weekly', type = 'log')))
+
+#Change the column names to the sector names from our dataframe above.
+
+colnames(comm_returns) <- comm_ticker_sector$sector
+    
+comm_returns
+
+}
+
+# Let's pass in our ticker symbols,csv_dir and build an xts object of etf returns
+csv_dir <- "C:/Users/RJK/Documents/SpiderOak Hive/Financial/commodities_data/daily2006"
+comm_returns <- comm_weekly_returns(comm_ticker_sector$ticker,csv_dir)
+
+head(comm_returns)
+```
+
+```{r, eval=FALSE, include=FALSE}
+for (tick in ticker){
+  getSymbols(Symbols = tick, verbose = TRUE, warnings = TRUE, 
+           src = 'csv', dir= "C:/Users/RJK/Documents/SpiderOak Hive/Financial/commodities_data/", 
+           extension='csv', header = TRUE, 
+           stingsAsFactors = FALSE)
+  no_dup <- to.daily(get(tick), indexAt='days',drop.time = TRUE) # this is required to remove duplicate data
+  assign(tick, no_dup["2006/"]) 
+  writedf <- data.frame(get(tick))      # revert the xts to a dataframe
+  csv_file <- paste("C:/Users/RJK/Documents/SpiderOak Hive/Financial/commodities_data/daily2006/",
+        tick, ".csv", sep ="")          # Generate the file name
+  out <- write.csv(writedf,             # write to file
+                   file = csv_file,
+                   quote = FALSE, row.names = TRUE)
+  }
+```
+
+OK, now we've done that we can really start ripping off Jonathons code line for line, with some minor naming changes to reflect the fact that we are dealing with commodities, not sector ETFs. But wait! We don't have the index returns loaded! We have to modify the function to get this using the getSymbols function
+
+```{r}
+# A function that calculates the rolling correlation between a commodity and the GSPC index 
+
+comm_index_correlation <- function(x, window) {
+    # Make one xts object to hold the sector returns and the SPY returns  
+    merged_xts <- merge(x, comm_returns$'Index')
+
+    # Use rollapply() to calculate the rolling correlations. 
+    # See what happens if you remove the 'pairwise.complete.obs' argument - the NAs will cause problems.
+    merged_xts$rolling_cor <- rollapply(merged_xts, window, 
+                                         function(x) cor(x[,1], x[,2], use = "pairwise.complete.obs"), 
+                                         by.column = FALSE)
+    
+    names(merged_xts) <- c("Commodity Returns", "GSPC Returns", "Commodity/GSPC Correlation")
+    
+    merged_xts
+}
+```
+
+SO now we can see if the function works.
+
+
+```{r}
+# Choose a Commodity and a rolling window and pass them to the function we just built. 
+# Let's go with a 5 month window and the Corn ("CO")
+# We will now have a new xts object with 3 time series: sector returns, SPY returns
+# and the rolling correlation between those return series.
+
+Corn_GSPC_correlation <- comm_index_correlation(comm_returns$'Corn', 20)
+
+# Have a peek. The first 20 rows in the correlation column should be 
+# NAs. 
+
+head(Corn_GSPC_correlation, n = 25)
+```
+
+Seems to work, alright, I'm thrilled! Now for the final step. Visualise the sucker.
+
+```{r}
+# Let's graph the commodity/index rolling correlation using dygraphs. 
+# I'll add an event for the financial crisis and shade the recession of 2007-2009 with 
+# an unimposing pink hue.
+
+dygraph(Corn_GSPC_correlation$'Commodity/GSPC Correlation', main = "Correlation between GSPC and Corn") %>% 
+    dyAxis("y", label = "Correlation") %>% 
+    dyRangeSelector(height = 20) %>%
+    # Add shading for the recessionary period
+    dyShading(from = "2007-12-01", to = "2009-06-01", color = "#FFE6E6") %>% 
+    # Add an event for the financial crisis. 
+    dyEvent(x = "2008-09-15", label = "Fin Crisis", labelLoc = "top", color = "red")
+```
+
+OK, so we have reproduced his work, using a different data set! Nice! Can I turn it into a shiny App? That is the question.
